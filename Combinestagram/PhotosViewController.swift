@@ -22,11 +22,11 @@
 
 import UIKit
 import Photos
-
 import RxSwift
 
 class PhotosViewController: UICollectionViewController {
-
+  private let bag = DisposeBag()
+  
   // MARK: public properties
   var selectedPhotos: Observable<UIImage> {
     return selectedPhotosSubject.asObservable()
@@ -49,11 +49,44 @@ class PhotosViewController: UICollectionViewController {
     allPhotosOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
     return PHAsset.fetchAssets(with: allPhotosOptions)
   }
-
+  
+  private func errorMessage() {
+    alert(title: "No access to Camera Roll",
+          text: "You can grant access to Combinestagram from the Settings app")
+      .subscribe(onCompleted: {[weak self] in
+        self?.dismiss(animated: true, completion: nil)
+        _ = self?.navigationController?.popViewController(animated: true)
+      })
+      .disposed(by: bag)
+  }
+  
   // MARK: View Controller
   override func viewDidLoad() {
     super.viewDidLoad()
-
+    
+    let auth  = PHPhotoLibrary.auth.share()
+    
+    //用户允许授权的操作序列
+    auth.skipWhile{!$0}
+      .take(1)
+      .subscribe(onNext: { [weak self] _ in
+        self?.photos = PhotosViewController.loadPhotos()
+        
+        DispatchQueue.main.async {
+          self?.collectionView?.reloadData()
+        }
+      })
+      .disposed(by: bag)
+    
+    //用户拒绝授权的操作序列
+    auth.skip(1)
+      .takeLast(1)    //tips:此处筛选了重复元素,可用distinctUntilChanged()组织序列发出重复元素
+      .filter{!$0}
+      .subscribe(onNext: { [weak self] _ in
+        guard let errorMessage = self?.errorMessage else { return }
+        DispatchQueue.main.async(execute: errorMessage)
+      })
+      .disposed(by:bag)
   }
 
   override func viewWillDisappear(_ animated: Bool) {
@@ -95,6 +128,27 @@ class PhotosViewController: UICollectionViewController {
       if let isThumbnail = info[PHImageResultIsDegradedKey as NSString] as? Bool, !isThumbnail {
         self?.selectedPhotosSubject.onNext(image)
       }
+    })
+  }
+}
+
+extension PHPhotoLibrary{
+  static var auth:Observable<Bool>{
+    return Observable.create({ (observer) -> Disposable in
+      //TODO: - GCD可用rxSwift Schedulers替代
+      DispatchQueue.main.async {
+        if authorizationStatus() == .authorized{
+          observer.onNext(true)
+          observer.onCompleted()
+        }else{
+          observer.onNext(false)
+          requestAuthorization({ (newStates) in
+            observer.onNext(newStates == .authorized)
+            observer.onCompleted()
+          })
+        }
+      }
+      return Disposables.create()
     })
   }
 }
