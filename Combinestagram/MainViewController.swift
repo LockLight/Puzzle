@@ -27,6 +27,7 @@ class MainViewController: UIViewController {
 
   private let bag = DisposeBag()
   private let images = Variable<[UIImage]>([])
+  private var imageCache = [Int]()
 
   @IBOutlet weak var imagePreview: UIImageView!
   @IBOutlet weak var buttonClear: UIButton!
@@ -57,9 +58,16 @@ class MainViewController: UIViewController {
     itemAdd.isEnabled = photos.count < 6
     title = photos.count > 0 ? "\(photos.count) photos" : "Collage"
   }
+  
+  private func updateNaviIcon(){
+    let icon = imagePreview.image?.scaled(CGSize(width: 22, height: 22))
+                .withRenderingMode(.alwaysOriginal)
+    navigationItem.leftBarButtonItem = UIBarButtonItem(image: icon, style: .done, target: nil, action: nil)
+  }
 
   @IBAction func actionClear() {
     images.value = []
+    imageCache = []
   }
 
   @IBAction func actionSave() {
@@ -80,8 +88,25 @@ class MainViewController: UIViewController {
 
     let photosViewController = storyboard!.instantiateViewController(
       withIdentifier: "PhotosViewController") as! PhotosViewController
-
-    photosViewController.selectedPhotos
+    
+    ////避免重复创建订阅对象,使用share共享该订阅
+    let newPhotos = photosViewController.selectedPhotos.share()
+    
+    newPhotos
+      //该方法依次判断 Observable 序列的每一个值是否满足给定的条件。 当第一个不满足条件的值出现时，它便自动完成。
+      .takeWhile({ [weak self] image -> Bool in
+        return (self?.images.value.count ?? 0) < 6
+      })
+      .filter({ (newImage) -> Bool in
+        return newImage.size.width > newImage.size.height
+      })
+      .filter({ [weak self] newImage -> Bool in
+        let new = UIImagePNGRepresentation(newImage)?.count ?? 0
+        //包含当前图片直接返回,不包含则添加,去重操作
+        guard self?.imageCache.contains(new) == false else {return false}
+        self?.imageCache.append(new)
+        return true
+      })
       .subscribe(onNext: { [weak self] newImage in
         guard let images = self?.images else { return }
         images.value.append(newImage)
@@ -89,7 +114,15 @@ class MainViewController: UIViewController {
           print("completed photo selection")
       })
       .disposed(by: bag)
-
+    
+    newPhotos
+      //如果我们并不关心 Observable 的任何元素，只想知道 Observable 在什么时候终止，那就可以使用 ignoreElements 操作符。
+      //即相册选择完成后,回到上一个控制器时触发subscribe
+      .ignoreElements()
+      .subscribe(onCompleted: {[weak self] in
+          self?.updateNaviIcon()
+        })
+      .disposed(by: bag)
     navigationController!.pushViewController(photosViewController, animated: true)
 
   }
